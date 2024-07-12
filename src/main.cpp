@@ -14,18 +14,21 @@
 #include <Wire.h>
 #include <esp_int_wdt.h>
 #include <esp_task_wdt.h>
+#include <BluetoothSerial.h>
+
 
 using namespace reactesp;
 
 ReactESP app;
+BluetoothSerial Serialbt;
 
 #define SCREEN_WIDTH 128  // OLED display width, in pixels
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
 
 TwoWire *i2c;
 
-Stream *read_stream = &Serial;
-Stream *forward_stream = &Serial;
+Stream *read_stream = &Serialbt;
+Stream *forward_stream = &Serialbt;
 
 tActisenseReader actisense_reader;
 
@@ -41,7 +44,7 @@ void ToggleLed() {
 
 int num_n2k_messages = 0;
 void HandleStreamN2kMsg(const tN2kMsg &message) {
-  // N2kMsg.Print(&Serial);
+  //N2kMsg.Print(&Serial);
   num_n2k_messages++;
   ToggleLed();
 }
@@ -79,13 +82,18 @@ void PollCANStatus() {
 }
 
 void setup() {
+
   // setup serial output
   Serial.begin(115200);
   delay(100);
 
+  Serialbt.begin ("ActiSense");
+
+  Serial.println ("Hello here");
+
   // toggle the LED pin at rate of 1 Hz
   pinMode(LED_BUILTIN, OUTPUT);
-  app.onRepeatMicros(1e6 / 1, []() { ToggleLed(); });
+  app.onRepeat(1000, []() { ToggleLed(); });
 
   // instantiate the NMEA2000 object
   nmea2000 = new tNMEA2000_esp32(CAN_TX_PIN, CAN_RX_PIN);
@@ -135,8 +143,11 @@ void setup() {
     actisense_reader.ParseMessages();
   });
 
+#if 0
   // enable CAN status polling
   app.onRepeat(100, []() { PollCANStatus(); });
+#endif
+
 
   // initialize the display
   i2c = new TwoWire(0);
@@ -153,6 +164,7 @@ void setup() {
   // update results
 
   app.onRepeat(1000, []() {
+   
     display->clearDisplay();
     display->setTextSize(1);
     display->setCursor(0, 0);
@@ -170,4 +182,6 @@ void setup() {
   });
 }
 
-void loop() { app.tick(); }
+void loop() { 
+  app.tick();
+}
