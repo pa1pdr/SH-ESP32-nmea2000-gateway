@@ -19,6 +19,7 @@
 #include <N2kMessages.h>
 #include <NMEA2000_esp32.h>
 #include <ReactESP.h>
+#include <AsyncTCP.h>
 #include <Wire.h>
 #include <esp_int_wdt.h>
 #include <esp_task_wdt.h>
@@ -31,8 +32,8 @@ ReactESP app;
 #define SCREEN_WIDTH 128  // OLED display width, in pixels
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
 
-WiFiServer server1 (WGX1_PORT1);
-WiFiClient client1;
+AsyncServer *server1 = new AsyncServer(WGX1_PORT1); 
+AsyncClient client1;
 
 WiFiServer server2 (WGX1_PORT2);
 WiFiClient client2;
@@ -54,6 +55,48 @@ Adafruit_SSD1306 *display;
 
 tNMEA2000 *nmea2000;
 
+class WiFiClientStream : public Stream {
+public:
+    WiFiClientStream(WiFiClient* client) : client(client) {}
+
+    size_t write(uint8_t data) override {
+        return client->write(data);
+    }
+
+    size_t write(const uint8_t *buffer, size_t size) override {
+        return client->write(buffer, size);
+    }
+
+    int available() override {
+        return client->available();
+    }
+
+    int read() override {
+        if (!client->connected() || !client->available()) {
+            return -1;
+        }
+        return client->read();
+    }
+
+    int peek() override {
+        if (!client->connected() || !client->available()) {
+            return -1;
+        }
+        return client->peek();
+    }
+
+    void flush() override {
+        client->flush();
+    }
+
+private:
+    WiFiClient* client;
+};
+
+WiFiClient client;
+WiFiClientStream* wifiStream;
+
+
 void ToggleLed() {
   static bool led_state = false;
   digitalWrite(LED_BUILTIN, led_state);
@@ -65,7 +108,7 @@ void HandleStreamN2kMsg(const tN2kMsg &message) {
   num_n2k_messages++;
   debugD ("N2K msg PGN %d",message.PGN);
   ToggleLed();
-  message.Print (&client1);
+
 }
 
 int num_actisense_messages = 0;
@@ -101,6 +144,50 @@ void PollCANStatus() {
   }
 }
 
+void handleData(void *arg, AsyncClient *client, void *data, size_t len) {
+	debugD("Data received from client %s", client->remoteIP().toString().c_str());
+	debugD("Data = [[%s]]",(char *) data);
+
+  actisense_reader.GetMessageFromStream ();
+	// reply to client
+	if (client->space() > len && client->canSend()) {
+		client->add("Thanks for ",sizeof("Thanks for "));
+    client->add((char *)data,len); 
+		client->send();
+	}
+}
+
+void handleError(void *arg, AsyncClient *client, int8_t error) {
+	debugE("Connection error %s from client %s ", client->errorToString(error), client->remoteIP().toString().c_str());
+}
+
+void handleDisconnect(void *arg, AsyncClient *client) {
+	debugI("Client %s disconnected", client->remoteIP().toString().c_str());
+}
+
+void handleTimeOut(void *arg, AsyncClient *client, uint32_t time) {
+  debugI("\n client ACK timeout ip: %s \n", client->remoteIP().toString().c_str());
+}
+
+/**
+ * @brief handleNewClient
+ * 
+ * called whenever a new client connects
+ * 
+ * @param arg 
+ * @param client 
+ */
+void handleNewClient(void *arg, AsyncClient *client) {
+	debugI("New client connected to server, ip: %s", client->remoteIP().toString().c_str());
+	// register events
+	client->onData(&handleData, NULL);
+	client->onError(&handleError, NULL);
+	client->onDisconnect(&handleDisconnect, NULL);
+	client->onTimeout(&handleTimeOut, NULL);
+}
+
+
+
 void setup() {
 
 #ifndef DEBUG_DISABLED
@@ -110,6 +197,7 @@ void setup() {
 #endif
   delay(100);
   pinMode (ESP_BTNR,INPUT_PULLDOWN);
+
 
 // TODO Setup Sensesp connection: we need to be connected to the network
   SensESPAppBuilder builder;
@@ -180,8 +268,20 @@ void setup() {
   debugI("N2K initialized");
   actisense_reader.SetDefaultSource(75);
   actisense_reader.SetMsgHandler(HandleStreamActisenseMsg);
+  actisense_reader.SetReadStream();
 
 
+  app.onRepeat (1000,[](){
+    if (WiFi.isConnected() && !server1->status()) {
+      server1->onClient(&handleNewClient, server1);
+	    server1->begin();
+      debugI ("Started a server on port %d",WGX1_PORT1);
+    }
+  });
+
+
+
+/*
   // Data Server1
   app.onRepeat(1000, []() {
     if (WiFi.isConnected()) {
@@ -217,6 +317,8 @@ void setup() {
       } 
     }
   });
+*/
+
 
   app.onRepeat (1000, [](){
       counterActi->emit (num_actisense_messages);
@@ -264,7 +366,7 @@ void setup() {
     display->printf("");
     WiFi.localIP().toString().toCharArray (ip,sizeof(ip));
     display->printf("IP: %s\n", ip);
-    display->printf("Status %s", client1?"Connected":"Idle");
+  //  display->printf("Status %s", client1?"Connected":"Idle");
 
 
     display->display();
