@@ -2,8 +2,16 @@
 
 #define CAN_RX_PIN GPIO_NUM_34
 #define CAN_TX_PIN GPIO_NUM_32
-#define SDA_PIN 16
-#define SCL_PIN 17
+
+// SDA and SCL pins on SH-ESP32
+#define SDA_PIN GPIO_NUM_16
+#define SCL_PIN GPIO_NUM_17
+
+#define ESP_BTNR GPIO_NUM_0
+// ports for the 3 WGX1 data servers
+#define WGX1_PORT1 60001
+#define WGX1_PORT2 60002
+#define WGX1_PORT3 60003 
 
 #include <ActisenseReader.h>
 #include <Adafruit_GFX.h>
@@ -14,24 +22,34 @@
 #include <Wire.h>
 #include <esp_int_wdt.h>
 #include <esp_task_wdt.h>
-#include <BluetoothSerial.h>
+#include <sensesp_app_builder.h>
 
-
-using namespace reactesp;
+using namespace sensesp;
 
 ReactESP app;
-BluetoothSerial Serialbt;
 
 #define SCREEN_WIDTH 128  // OLED display width, in pixels
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
 
-TwoWire *i2c;
+WiFiServer server1 (WGX1_PORT1);
+WiFiClient client1;
 
-Stream *read_stream = &Serialbt;
-Stream *forward_stream = &Serialbt;
+WiFiServer server2 (WGX1_PORT2);
+WiFiClient client2;
+
+WiFiServer server3 (WGX1_PORT2);
+WiFiClient client3;
+
+String hostname = "WGX1-GW";
+
+
+auto counterActi = new SKOutputInt ("sensorDevice." + hostname +  ".ActiSense_PGNs","",new SKMetadata (""));
+auto counterN2K = new SKOutputInt ("sensorDevice." + hostname +  ".N2K_PGNs","",new SKMetadata (""));
+
 
 tActisenseReader actisense_reader;
 
+TwoWire *i2c;
 Adafruit_SSD1306 *display;
 
 tNMEA2000 *nmea2000;
@@ -44,16 +62,18 @@ void ToggleLed() {
 
 int num_n2k_messages = 0;
 void HandleStreamN2kMsg(const tN2kMsg &message) {
-  //N2kMsg.Print(&Serial);
   num_n2k_messages++;
+  debugD ("N2K msg PGN %d",message.PGN);
   ToggleLed();
+  message.Print (&client1);
 }
 
 int num_actisense_messages = 0;
 void HandleStreamActisenseMsg(const tN2kMsg &message) {
-  // N2kMsg.Print(&Serial);
+  //N2kMsg.Print(&Serial);
   num_actisense_messages++;
   ToggleLed();
+  debugD ("Actisense msg PGN %d",message.PGN);
   nmea2000->SendMsg(message);
 }
 
@@ -83,13 +103,34 @@ void PollCANStatus() {
 
 void setup() {
 
-  // setup serial output
+#ifndef DEBUG_DISABLED
+  SetupSerialDebug(115200);
+#else
   Serial.begin(115200);
+#endif
   delay(100);
+  pinMode (ESP_BTNR,INPUT_PULLDOWN);
 
-  Serialbt.begin ("ActiSense");
+// TODO Setup Sensesp connection: we need to be connected to the network
+  SensESPAppBuilder builder;
 
-  Serial.println ("Hello here");
+
+  sensesp_app = (&builder)
+                    // Set a custom hostname for the app.
+                    ->set_hostname(hostname)
+                    ->enable_ota("mypassword")
+                  //  ->enable_wifi_signal_sensor()
+                  //  ->enable_free_mem_sensor()
+                  //  ->enable_ip_address_sensor()
+                    ->set_button_pin(ESP_BTNR)  // reset
+                    ->get_app();
+
+  // TODO Set up a port (or 2) where we can interact with WGX clients
+
+  // TODO Add debugging capabilities over the network
+
+  // MAYBE Cater for a touch button to enable the display and move onto
+  // different pages
 
   // toggle the LED pin at rate of 1 Hz
   pinMode(LED_BUILTIN, OUTPUT);
@@ -109,38 +150,83 @@ void setup() {
   nmea2000->SetProductInformation(
       "20210331",  // Manufacturer's Model serial code (max 32 chars)
       103,         // Manufacturer's product code
-      "SH-ESP32 NMEA 2000 USB GW",  // Manufacturer's Model ID (max 33 chars)
-      "0.1.0.0 (2021-03-31)",  // Manufacturer's Software version code (max 40
+      "SH-ESP32 NMEA 2000 WGX-1 GW",  // Manufacturer's Model ID (max 33 chars)
+      "0.1.0.0 (2024-07-12)",  // Manufacturer's Software version code (max 40
                                // chars)
       "0.0.3.1 (2021-03-07)"   // Manufacturer's Model version (max 24 chars)
   );
+
   // Set device information
   nmea2000->SetDeviceInformation(
-      1,    // Unique number. Use e.g. Serial number.
-      130,  // Device function=Analog to NMEA 2000 Gateway. See codes on
-            // http://www.nmea.org/Assets/20120726%20nmea%202000%20class%20&%20function%20codes%20v%202.00.pdf
-      25,   // Device class=Inter/Intranetwork Device. See codes on
-           // http://www.nmea.org/Assets/20120726%20nmea%202000%20class%20&%20function%20codes%20v%202.00.pdf
-      2046  // Just choosen free from code list on
-            // http://www.nmea.org/Assets/20121020%20nmea%202000%20registration%20list.pdf
+      20210331,  // Unique number. Use e.g. Serial number.
+      137,       // Device function=NMEA 2000 Wireless Gateway. See codes on
+            // https://canboat.github.io/canboat/canboat.html#indirect-lookup-DEVICE_FUNCTION
+      25,  // Makes it an internetwork device
+           // https://canboat.github.io/canboat/canboat.html#lookup-DEVICE_CLASS
+      641,  // Diverse Yacht Services. Just choosen free from code list on
+            // https://canboat.github.io/canboat/canboat.html#lookup-INDUSTRY_CODE
+      4  // Industry Group: Marine
   );
 
-  nmea2000->SetForwardStream(forward_stream);
-  nmea2000->SetMode(tNMEA2000::N2km_ListenAndNode);
-  // nmea2000->SetForwardType(tNMEA2000::fwdt_Text); // Show bus data in clear
+  nmea2000->SetForwardType(tNMEA2000::fwdt_Text); // Show bus data in clear
   // text
-  nmea2000->SetForwardOwnMessages(false);  // do not echo own messages.
+
+  nmea2000->EnableForward(true);
+  // nmea2000->SetForwardType(tNMEA2000::fwdt_Actisense);         // Show bus data in actisens fmt
+  nmea2000->SetForwardOwnMessages(true);  // do not echo own messages.
+  nmea2000->SetMode(tNMEA2000::N2km_ListenAndSend);
   nmea2000->SetMsgHandler(HandleStreamN2kMsg);
   nmea2000->Open();
-
-  actisense_reader.SetReadStream(read_stream);
+  debugI("N2K initialized");
   actisense_reader.SetDefaultSource(75);
   actisense_reader.SetMsgHandler(HandleStreamActisenseMsg);
 
+
+  // Data Server1
+  app.onRepeat(1000, []() {
+    if (WiFi.isConnected()) {
+      if (!server1) server1.begin();
+      if (server1.hasClient()) {
+        debugD ("Evaluating client connection");
+        if (!client1 || !client1.connected()) {
+          debugI("We have a client!");
+          client1 = server1.available();
+
+          debugD ("client connected");
+          nmea2000->SetForwardStream(&client1);
+          debugD ("N2K Stream forwarded");
+          actisense_reader.SetReadStream(&client1);
+          debugI("New client connected on data server 1");
+        } else if (client1 && client1.connected()) {
+          // Client is still connected
+          debugI("Client still connected on data server 1");
+          String s;
+          while ((s = client1.readString()) != "") {
+            debugI("Received %s", s);
+          }
+        } else if (client1 && !client1.connected()) {
+          // Client has disconnected
+          debugI("Client disconnected from data server 1");
+          nmea2000->SetForwardStream(NULL);
+          actisense_reader.SetReadStream(NULL);
+          client1.stop();
+        } else {
+          debugI ("client1 %s", client1.connected()?"connected":"not connected");
+          debugI ("client1 %s", client1?"connected":"not connected");
+        }
+      } 
+    }
+  });
+
+  app.onRepeat (1000, [](){
+      counterActi->emit (num_actisense_messages);
+      counterN2K->emit (num_n2k_messages);
+  });
+
   // No need to parse the messages at every single loop iteration; 1 ms will do
   app.onRepeat(1, []() {
-    nmea2000->ParseMessages();
     actisense_reader.ParseMessages();
+    nmea2000->ParseMessages();
   });
 
 #if 0
@@ -163,8 +249,9 @@ void setup() {
 
   // update results
 
+
   app.onRepeat(1000, []() {
-   
+    char ip[20];
     display->clearDisplay();
     display->setTextSize(1);
     display->setCursor(0, 0);
@@ -174,12 +261,20 @@ void setup() {
     display->printf("Uptime: %lu\n", millis() / 1000);
     display->printf("RX: %d\n", num_n2k_messages);
     display->printf("TX: %d\n", num_actisense_messages);
+    display->printf("");
+    WiFi.localIP().toString().toCharArray (ip,sizeof(ip));
+    display->printf("IP: %s\n", ip);
+    display->printf("Status %s", client1?"Connected":"Idle");
+
 
     display->display();
 
-    num_n2k_messages = 0;
-    num_actisense_messages = 0;
+   // num_n2k_messages = 0;
+   // num_actisense_messages = 0;
   });
+
+  sensesp_app->start();
+
 }
 
 void loop() { 
