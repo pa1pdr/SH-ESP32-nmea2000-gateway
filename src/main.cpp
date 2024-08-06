@@ -220,11 +220,11 @@ void setup() {
       4  // Industry Group: Marine
   );
 
-  nmea2000->SetForwardType(tNMEA2000::fwdt_Text); // Show bus data in clear
-  // text
-
-  nmea2000->EnableForward(true);
+  nmea2000->SetForwardType(tNMEA2000::fwdt_Text); // Show bus data in clear text
   // nmea2000->SetForwardType(tNMEA2000::fwdt_Actisense);         // Show bus data in actisens fmt
+  
+  nmea2000->EnableForward(true);
+  
   nmea2000->SetForwardOwnMessages(false);  // do not echo own messages.
   nmea2000->SetMode(tNMEA2000::N2km_ListenAndSend);
   nmea2000->SetMsgHandler(HandleStreamN2kMsg);
@@ -293,18 +293,13 @@ void setup() {
 
 /// FOR DEBUGGING
   app.onRepeat (5000,[](){
-    /* tN2kMsg N2kMsg;
-     SetN2kTransmissionParameters(N2kMsg, 
-                                 0,
-                                 N2kTG_Forward,  // gear position
-                                 N2kDoubleNA,    // oilpressure
-                                 367.0);
-    nmea2000->SendMsg(N2kMsg);
-    */
-    const char *msg = "A173321.107 23FF7 1F513 012F3070002F30709F";
+ 
+    // send a PGN 129029 message in ActiSense ASCII
+    const char *msg = "A000000.000 00FF2 1F805 FFE54D60606E304060352C8FC72B07587DBA743BF39000FFFFFFFFFFFFFF7F23FC104000FF7FFFFFFFFF0";
+    
     if (client.connected()) {
       debugD ("Sending N2K msg PGN %s",msg);
-      wifiStream->println (msg);
+      wifiStream->printf ("%s\n",msg);
     }
   });
 

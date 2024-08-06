@@ -173,7 +173,7 @@ bool tActisenseASCIIReader::GetMessageFromStream(tN2kMsg &N2kMsg, bool ReadOut) 
   debugV ("Prio is %s",address.substring(4,5).c_str());
   String pgns = String ((char *)MsgBuf+18,5);
   N2kMsg.PGN = strtol (pgns.c_str(),nullptr,16);
-  debugV ("PGN is %d [%s]",N2kMsg.PGN,pgns.c_str());
+  debugD ("PGN is %d [%s]",N2kMsg.PGN,pgns.c_str());
   
   for (int i = 24; i < strlen ((char *)MsgBuf);i+=2) {
       String byte = String ((char *)MsgBuf+i,2);
