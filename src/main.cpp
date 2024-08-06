@@ -24,6 +24,7 @@
 #include <esp_int_wdt.h>
 #include <esp_task_wdt.h>
 #include <sensesp_app_builder.h>
+#include "include/ActisenseASCIIReader.h"
 
 using namespace sensesp;
 
@@ -32,14 +33,10 @@ ReactESP app;
 #define SCREEN_WIDTH 128  // OLED display width, in pixels
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
 
-AsyncServer *server1 = new AsyncServer(WGX1_PORT1); 
-AsyncClient client1;
 
-WiFiServer server2 (WGX1_PORT2);
-WiFiClient client2;
 
-WiFiServer server3 (WGX1_PORT2);
-WiFiClient client3;
+WiFiServer server1 (WGX1_PORT1);
+
 
 String hostname = "WGX1-GW";
 
@@ -48,7 +45,7 @@ auto counterActi = new SKOutputInt ("sensorDevice." + hostname +  ".ActiSense_PG
 auto counterN2K = new SKOutputInt ("sensorDevice." + hostname +  ".N2K_PGNs","",new SKMetadata (""));
 
 
-tActisenseReader actisense_reader;
+tActisenseASCIIReader actisense_reader;
 
 TwoWire *i2c;
 Adafruit_SSD1306 *display;
@@ -60,10 +57,12 @@ public:
     WiFiClientStream(WiFiClient* client) : client(client) {}
 
     size_t write(uint8_t data) override {
+        debugI ("writing [%s]",data);
         return client->write(data);
     }
 
     size_t write(const uint8_t *buffer, size_t size) override {
+        debugI ("Writing [%s]",buffer);
         return client->write(buffer, size);
     }
 
@@ -75,7 +74,9 @@ public:
         if (!client->connected() || !client->available()) {
             return -1;
         }
-        return client->read();
+        int c = client->read();
+        debugV ("C = %d %c",c,(char)c);
+        return c;
     }
 
     int peek() override {
@@ -91,6 +92,8 @@ public:
 
 private:
     WiFiClient* client;
+    u_char buffer[80];
+    u_int len = 0;
 };
 
 WiFiClient client;
@@ -106,8 +109,13 @@ void ToggleLed() {
 int num_n2k_messages = 0;
 void HandleStreamN2kMsg(const tN2kMsg &message) {
   num_n2k_messages++;
-  debugD ("N2K msg PGN %d",message.PGN);
   ToggleLed();
+
+  // UNTESTED
+  if (client && client.connected() && wifiStream->available()) {
+      debugD ("Sending N2K msg PGN %d",message.PGN);
+      message.SendInActisenseFormat (wifiStream);
+  }
 
 }
 
@@ -143,50 +151,6 @@ void PollCANStatus() {
       break;
   }
 }
-
-void handleData(void *arg, AsyncClient *client, void *data, size_t len) {
-	debugD("Data received from client %s", client->remoteIP().toString().c_str());
-	debugD("Data = [[%s]]",(char *) data);
-
-  actisense_reader.GetMessageFromStream ();
-	// reply to client
-	if (client->space() > len && client->canSend()) {
-		client->add("Thanks for ",sizeof("Thanks for "));
-    client->add((char *)data,len); 
-		client->send();
-	}
-}
-
-void handleError(void *arg, AsyncClient *client, int8_t error) {
-	debugE("Connection error %s from client %s ", client->errorToString(error), client->remoteIP().toString().c_str());
-}
-
-void handleDisconnect(void *arg, AsyncClient *client) {
-	debugI("Client %s disconnected", client->remoteIP().toString().c_str());
-}
-
-void handleTimeOut(void *arg, AsyncClient *client, uint32_t time) {
-  debugI("\n client ACK timeout ip: %s \n", client->remoteIP().toString().c_str());
-}
-
-/**
- * @brief handleNewClient
- * 
- * called whenever a new client connects
- * 
- * @param arg 
- * @param client 
- */
-void handleNewClient(void *arg, AsyncClient *client) {
-	debugI("New client connected to server, ip: %s", client->remoteIP().toString().c_str());
-	// register events
-	client->onData(&handleData, NULL);
-	client->onError(&handleError, NULL);
-	client->onDisconnect(&handleDisconnect, NULL);
-	client->onTimeout(&handleTimeOut, NULL);
-}
-
-
 
 void setup() {
 
@@ -261,63 +225,41 @@ void setup() {
 
   nmea2000->EnableForward(true);
   // nmea2000->SetForwardType(tNMEA2000::fwdt_Actisense);         // Show bus data in actisens fmt
-  nmea2000->SetForwardOwnMessages(true);  // do not echo own messages.
+  nmea2000->SetForwardOwnMessages(false);  // do not echo own messages.
   nmea2000->SetMode(tNMEA2000::N2km_ListenAndSend);
   nmea2000->SetMsgHandler(HandleStreamN2kMsg);
+
   nmea2000->Open();
   debugI("N2K initialized");
   actisense_reader.SetDefaultSource(75);
   actisense_reader.SetMsgHandler(HandleStreamActisenseMsg);
-  actisense_reader.SetReadStream();
 
-
-  app.onRepeat (1000,[](){
-    if (WiFi.isConnected() && !server1->status()) {
-      server1->onClient(&handleNewClient, server1);
-	    server1->begin();
-      debugI ("Started a server on port %d",WGX1_PORT1);
-    }
-  });
-
-
-
-/*
   // Data Server1
   app.onRepeat(1000, []() {
     if (WiFi.isConnected()) {
       if (!server1) server1.begin();
       if (server1.hasClient()) {
         debugD ("Evaluating client connection");
-        if (!client1 || !client1.connected()) {
+        if (!client || !client.connected()) {
           debugI("We have a client!");
-          client1 = server1.available();
+          client = server1.available();
+          // Create WiFiClientStream object
+          wifiStream = new WiFiClientStream(&client);
+          actisense_reader.SetReadStream(wifiStream);
+
 
           debugD ("client connected");
-          nmea2000->SetForwardStream(&client1);
+          nmea2000->SetForwardStream(wifiStream);
           debugD ("N2K Stream forwarded");
-          actisense_reader.SetReadStream(&client1);
           debugI("New client connected on data server 1");
-        } else if (client1 && client1.connected()) {
-          // Client is still connected
-          debugI("Client still connected on data server 1");
-          String s;
-          while ((s = client1.readString()) != "") {
-            debugI("Received %s", s);
-          }
-        } else if (client1 && !client1.connected()) {
-          // Client has disconnected
-          debugI("Client disconnected from data server 1");
-          nmea2000->SetForwardStream(NULL);
-          actisense_reader.SetReadStream(NULL);
-          client1.stop();
         } else {
-          debugI ("client1 %s", client1.connected()?"connected":"not connected");
-          debugI ("client1 %s", client1?"connected":"not connected");
+          debugI ("client1 %s", client.connected()?"connected":"not connected");
         }
       } 
     }
   });
-*/
+
+
 
 
   app.onRepeat (1000, [](){
@@ -349,9 +291,24 @@ void setup() {
   display->clearDisplay();
   display->display();
 
+/// FOR DEBUGGING
+  app.onRepeat (5000,[](){
+    /* tN2kMsg N2kMsg;
+     SetN2kTransmissionParameters(N2kMsg, 
+                                 0,
+                                 N2kTG_Forward,  // gear position
+                                 N2kDoubleNA,    // oilpressure
+                                 367.0);
+    nmea2000->SendMsg(N2kMsg);
+    */
+    const char *msg = "A173321.107 23FF7 1F513 012F3070002F30709F";
+    if (client.connected()) {
+      debugD ("Sending N2K msg PGN %s",msg);
+      wifiStream->println (msg);
+    }
+  });
+
   // update results
-
-
   app.onRepeat(1000, []() {
     char ip[20];
     display->clearDisplay();
