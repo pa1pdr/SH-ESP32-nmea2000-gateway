@@ -61,14 +61,6 @@ class tActisenseASCIIReader
 protected:
     /** \brief Maximum length of the stream message buffer*/
     #define MAX_STREAM_MSG_BUF_LEN 300
-    /** \brief Start of text has been received*/
-    bool StartOfTextReceived;
-    /** \brief A Message is coming*/
-    bool MsgIsComing;
-    /** \brief Escape character has been received*/
-    bool EscapeReceived;
-    /** \brief Sum of all bytes is used as kind of check sum*/
-    int byteSum;
     /** \brief Buffer for incoming messages from stream*/
     unsigned char MsgBuf[MAX_STREAM_MSG_BUF_LEN];
     /** \brief Current write position inside the buffer */
@@ -97,14 +89,7 @@ protected:
      */
     void ClearBuffer();
     
-    /********************************************************************//**
-     * \brief Checks is Actisense message read from stream valid and builds tN2kMsg message from it.
-     *
-     * \param N2kMsg    Reference to a destination tN2kMsg Object  
-     * \retval true     Message is valid. Message has been copied to N2kMsg
-     * \retval false    Length does not match, checksum does not match or data length greater than tN2kMsg::MaxDataLen
-     */
-    bool CheckMessage(tN2kMsg &N2kMsg);
+
 
 public:
 
@@ -155,16 +140,15 @@ public:
      */
     bool GetMessageFromStream(tN2kMsg &N2kMsg, bool ReadOut=true);
 
-    /********* **********************************************************//**
-     * \brief Checks if character is start of Actisense format
+    /**
+     * @brief builds an ActiSense ASCII string into the buffer from the N2KMSG
      * 
-     * Function is designed to be used if stream has multiprotocol data.
-     *
-     * \param ch    character
-     * \retval true     if (ch==Escape)
-     * \retval false 
+     * @param N2kMsg    the message to convert
+     * @param buffer    the buffer to receive the conversion
+     * @param bufsize   the maximum size of the buffer
+     * @return u_int16_t  the lenth of the string (zero terminated)
      */
-    bool IsStart(char ch);
+    u_int16_t buildMessage (const tN2kMsg &N2kMsg, char* buffer, int bufsize);
 
     void readStringUntil(char terminator);
 
@@ -190,15 +174,6 @@ public:
      */
     void SetMsgHandler(void (*_MsgHandler)(const tN2kMsg &N2kMsg)) { MsgHandler=_MsgHandler; }
 
-    /** *****************************************************************//**
-     * \brief Indicates if still message handling is needed
-     * 
-     * Function is designed to be used if stream has multiprotocol data.
-     * 
-     * \retval true
-     * \retval false
-     */
-    bool Handling() const { return MsgIsComing || EscapeReceived || StartOfTextReceived; }
 };
 
 #endif

@@ -49,6 +49,7 @@ tActisenseASCIIReader actisense_reader;
 
 TwoWire *i2c;
 Adafruit_SSD1306 *display;
+bool show_display = true;
 
 tNMEA2000 *nmea2000;
 
@@ -106,25 +107,60 @@ void ToggleLed() {
   led_state = !led_state;
 }
 
+/**
+ * @brief turn on the display
+ * 
+ */
+void displayOn() {
+   display->ssd1306_command(SSD1306_DISPLAYON);  //not recommended
+   show_display = true;
+   // display->clearDisplay();
+   // display->display();
+}
+
+/**
+ * @brief turn off the display & save some penguins
+ * 
+ */
+void displayOff() {
+   show_display = false;
+   display->clearDisplay();
+   display->display();
+   display->ssd1306_command(SSD1306_DISPLAYOFF);  //not recommended
+}
+
+
 int num_n2k_messages = 0;
+int num_actisense_messages = 0;
+
+/**
+ * @brief handles an incoming NMEA2000 message from the bus
+ * 
+ * @param message 
+ */
 void HandleStreamN2kMsg(const tN2kMsg &message) {
   num_n2k_messages++;
   ToggleLed();
+  char buffer[200];
 
   // UNTESTED
   if (client && client.connected() && wifiStream->available()) {
-      debugD ("Sending N2K msg PGN %d",message.PGN);
-      message.SendInActisenseFormat (wifiStream);
+      actisense_reader.buildMessage (message,buffer,200);
+      debugI ("Forwarding N2K msg PGN %d, in Actisense ASCII [%s]",message.PGN,buffer);
+      wifiStream->println (buffer);
   }
-
 }
 
-int num_actisense_messages = 0;
+/**
+ * @brief handel an incoming Actisense message
+ * 
+ * @param message 
+ */
 void HandleStreamActisenseMsg(const tN2kMsg &message) {
-  //N2kMsg.Print(&Serial);
+
   num_actisense_messages++;
   ToggleLed();
-  debugD ("Actisense msg PGN %d",message.PGN);
+  debugI ("Forwarding Actisense msg PGN %d to N2K bus",message.PGN);
   nmea2000->SendMsg(message);
 }
 
@@ -156,6 +192,7 @@ void setup() {
 
 #ifndef DEBUG_DISABLED
   SetupSerialDebug(115200);
+  Debug.begin(hostname,22,DEBUG_LEVEL);
 #else
   Serial.begin(115200);
 #endif
@@ -163,7 +200,7 @@ void setup() {
   pinMode (ESP_BTNR,INPUT_PULLDOWN);
 
 
-// TODO Setup Sensesp connection: we need to be connected to the network
+// Setup Sensesp connection: we need to be connected to the network
   SensESPAppBuilder builder;
 
 
@@ -172,7 +209,7 @@ void setup() {
                     ->set_hostname(hostname)
                     ->enable_ota("mypassword")
                   //  ->enable_wifi_signal_sensor()
-                  //  ->enable_free_mem_sensor()
+                    ->enable_free_mem_sensor()
                   //  ->enable_ip_address_sensor()
                     ->set_button_pin(ESP_BTNR)  // reset
                     ->get_app();
@@ -200,7 +237,7 @@ void setup() {
 
   // Set Product information
   nmea2000->SetProductInformation(
-      "20210331",  // Manufacturer's Model serial code (max 32 chars)
+      "20240331",  // Manufacturer's Model serial code (max 32 chars)
       103,         // Manufacturer's product code
       "SH-ESP32 NMEA 2000 WGX-1 GW",  // Manufacturer's Model ID (max 33 chars)
       "0.1.0.0 (2024-07-12)",  // Manufacturer's Software version code (max 40
@@ -210,7 +247,7 @@ void setup() {
 
   // Set device information
   nmea2000->SetDeviceInformation(
-      20210331,  // Unique number. Use e.g. Serial number.
+      2024331,  // Unique number. Use e.g. Serial number.
       137,       // Device function=NMEA 2000 Wireless Gateway. See codes on
             // https://canboat.github.io/canboat/canboat.html#indirect-lookup-DEVICE_FUNCTION
       25,  // Makes it an internetwork device
@@ -221,7 +258,7 @@ void setup() {
   );
 
   nmea2000->SetForwardType(tNMEA2000::fwdt_Text); // Show bus data in clear text
-  // nmea2000->SetForwardType(tNMEA2000::fwdt_Actisense);         // Show bus data in actisens fmt
+  
   
   nmea2000->EnableForward(true);
   
@@ -255,13 +292,18 @@ void setup() {
         } else {
           debugI ("client1 %s", client.connected()?"connected":"not connected");
         }
-      } 
+      } else {
+           if (client && !client.connected()) {  /// no active client
+            debugI ("closing connection");
+            client.stop();
+          }
+      }
     }
   });
 
 
 
-
+  // update the statistics on #processed messages
   app.onRepeat (1000, [](){
       counterActi->emit (num_actisense_messages);
       counterN2K->emit (num_n2k_messages);
@@ -291,20 +333,31 @@ void setup() {
   display->clearDisplay();
   display->display();
 
-/// FOR DEBUGGING
-  app.onRepeat (5000,[](){
+#ifndef DEBUG_DISABLED
+/// FOR DEBUGGING REMOVE WHEN DONE
+  app.onRepeat (1000,[](){
  
     // send a PGN 129029 message in ActiSense ASCII
     const char *msg = "A000000.000 00FF2 1F805 FFE54D60606E304060352C8FC72B07587DBA743BF39000FFFFFFFFFFFFFF7F23FC104000FF7FFFFFFFFF0";
     
     if (client.connected()) {
       debugD ("Sending N2K msg PGN %s",msg);
-      wifiStream->printf ("%s\n",msg);
+      wifiStream->println (msg);
+      num_n2k_messages++;
     }
   });
+#endif
+
+  // turn the display off 10 mins after startup
+    app.onDelay (600000,[](){
+      displayOff();       
+    });
 
   // update results
   app.onRepeat(1000, []() {
+
+    if (!show_display) return;
+
     char ip[20];
     display->clearDisplay();
     display->setTextSize(1);

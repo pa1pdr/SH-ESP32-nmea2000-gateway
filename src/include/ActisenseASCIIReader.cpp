@@ -58,10 +58,6 @@ void tActisenseASCIIReader::readStringUntil(char terminator) {
 //*****************************************************************************
 void tActisenseASCIIReader::ClearBuffer() {
   MsgWritePos=0;
-  byteSum=0;
-  StartOfTextReceived=false;
-  MsgIsComing=false;
-  EscapeReceived=false;
 }
 
 //*****************************************************************************
@@ -75,45 +71,7 @@ bool tActisenseASCIIReader::AddByteToBuffer(char NewByte) {
 }
 
 #define Escape 'A'
-#define StartOfText 'A'
-#define EndOfText '\r'
-#define MsgTypeN2kData 0x93
-#define MsgTypeN2kRequest 0x94
 
-//*****************************************************************************
-bool tActisenseASCIIReader::CheckMessage(tN2kMsg &N2kMsg) {
-
-   N2kMsg.Clear();
-
-   int i=2;
-   
-   N2kMsg.PGN=GetBuf3ByteUInt(i,MsgBuf);
-   N2kMsg.Destination=MsgBuf[i++];
-   N2kMsg.Priority=MsgBuf[i++];
-   if ( MsgBuf[0]==MsgTypeN2kData ) {
-     N2kMsg.Source=MsgBuf[i++];
-     N2kMsg.MsgTime=GetBuf4ByteUInt(i,MsgBuf);
-   } else {
-     N2kMsg.Source=DefaultSource;
-     N2kMsg.MsgTime=N2kMillis();
-   }
-   N2kMsg.DataLen=MsgBuf[i++];
-
-   if ( N2kMsg.DataLen>tN2kMsg::MaxDataLen ) {
-     N2kMsg.Clear();
-     Serial.println ("Msg too long");
-     return false; // Too long data
-   }
-
-   for (int j=0; i<MsgWritePos-1; i++, j++) N2kMsg.Data[j]=MsgBuf[i];
-
-   return true;
-}
-
-//*****************************************************************************
-bool tActisenseASCIIReader::IsStart(char ch) {
-  return (ch==Escape);
-}
 
 //*****************************************************************************
 // Read Actisense formatted NMEA2000 message from stream
@@ -151,9 +109,9 @@ bool tActisenseASCIIReader::GetMessageFromStream(tN2kMsg &N2kMsg, bool ReadOut) 
   readStringUntil('\n');
   if (MsgBuf[0] == '\0') return result;
   
-  debugD("Processing %s %d",(unsigned char *)MsgBuf,strlen ((char *)MsgBuf));
+  debugD("Parsing message [%s] length %d",(unsigned char *)MsgBuf,strlen ((char *)MsgBuf));
 
-  if (MsgBuf[0] != 'A') {
+  if (MsgBuf[0] != Escape) {
     debugE ("Invalid ActiSense message starter [%x]. Are you sending ASCII?",MsgBuf[0]);
     return result;
   }
@@ -201,4 +159,32 @@ void tActisenseASCIIReader::ParseMessages() {
     }
 }
 
+/**
+ * @brief builds an ActiSense ASCII string into the buffer from the N2KMSG
+ *
+ * @param N2kMsg    the message to convert
+ * @param buffer    the buffer to receive the conversion
+ * @param bufsize   the maximum size of the buffer
+ * @return u_int16_t  the lenth of the string (zero terminated)
+ */
+u_int16_t tActisenseASCIIReader::buildMessage (const tN2kMsg &N2kMsg, char* buffer, int bufsize) {
+   int i = 0; int j = 0;
 
+  
+   buffer[0] = Escape;
+   strncpy (buffer+1,"000000.000 ",11);
+   sprintf (buffer+11,"%02X",(N2kMsg.Source != 0?N2kMsg.Source:DefaultSource) & 0xff);
+   sprintf (buffer+13,"%02X",N2kMsg.Destination & 0xff);
+   sprintf (buffer+15,"%1X ",N2kMsg.Priority & 0xff);
+   sprintf (buffer+17,"%05X ",N2kMsg.PGN & 0x1ffff);
+   for (i = 23;j < N2kMsg.DataLen;i+=2) {
+      if (i < bufsize) {
+        sprintf (buffer+i,"%02X",N2kMsg.GetByte(j) & 0xff);
+      }
+   }
+
+   buffer[i] = '\0';
+
+   return i;
+  
+}
