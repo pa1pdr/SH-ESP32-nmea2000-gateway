@@ -38,10 +38,6 @@ tActisenseASCIIReader::tActisenseASCIIReader() {
 }
 
 void tActisenseASCIIReader::readStringUntil(char terminator) {
-
-    char buffer[1024];
-    int index = 0;
-
     if (ReadStream == 0) return;
 
     int c = ReadStream->read();
@@ -80,6 +76,7 @@ bool tActisenseASCIIReader::AddByteToBuffer(char NewByte) {
 Decodes a message fomatted in ActiSense ASCII, similarly to the below 
 
 A173321.107 23FF7 1F513 012F3070002F30709F        <CR><LF>
+
 
 Where
 A173321.107
@@ -170,16 +167,21 @@ void tActisenseASCIIReader::ParseMessages() {
 u_int16_t tActisenseASCIIReader::buildMessage (const tN2kMsg &N2kMsg, char* buffer, int bufsize) {
    int i = 0; int j = 0;
 
-  
+  //A000000.000 02FF2 1F801 E1CBD61EBCE34A02
+  //0123467890123456789012345678901234567890
+  //0        1         2         3
+  //            ^ ^ ^ ^     ^ 
    buffer[0] = Escape;
-   strncpy (buffer+1,"000000.000 ",11);
-   sprintf (buffer+11,"%02X",(N2kMsg.Source != 0?N2kMsg.Source:DefaultSource) & 0xff);
-   sprintf (buffer+13,"%02X",N2kMsg.Destination & 0xff);
-   sprintf (buffer+15,"%1X ",N2kMsg.Priority & 0xff);
-   sprintf (buffer+17,"%05X ",N2kMsg.PGN & 0x1ffff);
-   for (i = 23;j < N2kMsg.DataLen;i+=2) {
+   strncpy (buffer+1,"000000.000  ",11);
+   sprintf (buffer+13,"%02X",(N2kMsg.Source != 0?N2kMsg.Source:DefaultSource) & 0xff);
+   sprintf (buffer+15,"%02X",N2kMsg.Destination & 0xff);
+   sprintf (buffer+17,"%1X ",N2kMsg.Priority & 0xff);
+   sprintf (buffer+19,"%05X ",N2kMsg.PGN & 0x1ffff);
+   for (i = 25;j < N2kMsg.DataLen;i+=2) {
       if (i < bufsize) {
         sprintf (buffer+i,"%02X",N2kMsg.GetByte(j) & 0xff);
+      } else {
+        DebugE ("Writing to exhausted ActisenseBuffer! PGN = %d", N2kMsg.PGN);
       }
    }
 

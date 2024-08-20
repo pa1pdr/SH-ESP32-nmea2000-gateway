@@ -60,7 +60,7 @@ class tActisenseASCIIReader
 {
 protected:
     /** \brief Maximum length of the stream message buffer*/
-    #define MAX_STREAM_MSG_BUF_LEN 300
+    #define MAX_STREAM_MSG_BUF_LEN 1024
     /** \brief Buffer for incoming messages from stream*/
     unsigned char MsgBuf[MAX_STREAM_MSG_BUF_LEN];
     /** \brief Current write position inside the buffer */

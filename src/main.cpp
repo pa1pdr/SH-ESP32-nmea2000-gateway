@@ -7,6 +7,7 @@
 #define SDA_PIN GPIO_NUM_16
 #define SCL_PIN GPIO_NUM_17
 
+#define SOURCE_ADDRESS 0x0
 #define ESP_BTNR GPIO_NUM_0
 // ports for the 3 WGX1 data servers
 #define WGX1_PORT1 60001
@@ -58,12 +59,12 @@ public:
     WiFiClientStream(WiFiClient* client) : client(client) {}
 
     size_t write(uint8_t data) override {
-        debugI ("writing [%s]",data);
+        debugV ("writing [%02x]",data);
         return client->write(data);
     }
 
     size_t write(const uint8_t *buffer, size_t size) override {
-        debugI ("Writing [%s]",buffer);
+        debugV ("Writing [%s]",buffer);
         return client->write(buffer, size);
     }
 
@@ -93,8 +94,6 @@ public:
 
 private:
     WiFiClient* client;
-    u_char buffer[80];
-    u_int len = 0;
 };
 
 WiFiClient client;
@@ -130,8 +129,8 @@ void displayOff() {
 }
 
 
-int num_n2k_messages = 0;
-int num_actisense_messages = 0;
+unsigned long num_n2k_messages = 0;
+unsigned long num_actisense_messages = 0;
 
 /**
  * @brief handles an incoming NMEA2000 message from the bus
@@ -141,13 +140,17 @@ int num_actisense_messages = 0;
 void HandleStreamN2kMsg(const tN2kMsg &message) {
   num_n2k_messages++;
   ToggleLed();
-  char buffer[200];
+  char buffer[MAX_STREAM_MSG_BUF_LEN];
 
-  // UNTESTED
-  if (client && client.connected() && wifiStream->available()) {
-      actisense_reader.buildMessage (message,buffer,200);
+
+  // Send it off
+  if (client.connected()) {
+      message.ForceSource (SOURCE_ADDRESS);   // alter the source to mine
+      actisense_reader.buildMessage (message,buffer,MAX_STREAM_MSG_BUF_LEN);
       debugI ("Forwarding N2K msg PGN %d, in Actisense ASCII [%s]",message.PGN,buffer);
-      wifiStream->println (buffer);
+      //wifiStream->println (buffer);
+  } else {
+    debugE ("Cannot forward N2K msg PGN %d, no connection",message.PGN);
   }
 }
 
@@ -246,6 +249,7 @@ void setup() {
   );
 
   // Set device information
+
   nmea2000->SetDeviceInformation(
       2024331,  // Unique number. Use e.g. Serial number.
       137,       // Device function=NMEA 2000 Wireless Gateway. See codes on
@@ -260,7 +264,7 @@ void setup() {
   nmea2000->SetForwardType(tNMEA2000::fwdt_Text); // Show bus data in clear text
   
   
-  nmea2000->EnableForward(true);
+  nmea2000->EnableForward(false);  // dont forward 
   
   nmea2000->SetForwardOwnMessages(false);  // do not echo own messages.
   nmea2000->SetMode(tNMEA2000::N2km_ListenAndSend);
@@ -301,6 +305,10 @@ void setup() {
     }
   });
 
+  app.onRepeat (600000L,[](){
+      nmea2000->SendProductInformation();
+      nmea2000->SendIsoAddressClaim();
+  });
 
 
   // update the statistics on #processed messages
@@ -339,7 +347,7 @@ void setup() {
  
     // send a PGN 129029 message in ActiSense ASCII
     const char *msg = "A000000.000 00FF2 1F805 FFE54D60606E304060352C8FC72B07587DBA743BF39000FFFFFFFFFFFFFF7F23FC104000FF7FFFFFFFFF0";
-    
+
     if (client.connected()) {
       debugD ("Sending N2K msg PGN %s",msg);
       wifiStream->println (msg);
