@@ -96,55 +96,15 @@ FF = Message went to destination address = 0xff (Global)
 ” ” – optional whitespace for example purposes – receiver must ignore.
 
 <CR><LF> – end delimiters*/
-bool tActisenseASCIIReader::GetMessageFromStream(tN2kMsg &N2kMsg, bool ReadOut) {
+bool tActisenseASCIIReader::GetMessageFromStream(tN2kMsg &N2kMsg) {
   bool result=false;
 
   if (ReadStream==0) return false;
-
   ClearBuffer();
-
   readStringUntil('\n');
   if (MsgBuf[0] == '\0') return result;
   
-  debugD("Parsing message [%s] length %d",(unsigned char *)MsgBuf,strlen ((char *)MsgBuf));
-
-  if (MsgBuf[0] != Escape) {
-    debugE ("Invalid ActiSense message starter [%x]. Are you sending ASCII?",MsgBuf[0]);
-    return result;
-  }
-  if (strlen ((char *)MsgBuf) < 24) {
-    debugE ("Invalid ActiSense message length [%d]. Are you sending ASCII? %x",strlen ((char*)MsgBuf));
-    return result;
-  }
-  String timestamp = String ((char *)MsgBuf + 1,10);
-  debugV ("Processing message with timestamp %s",timestamp);
-  String address = String ((char *)MsgBuf+12,5);
-  debugV ("Address is %s",address.c_str());
-  N2kMsg.Source = strtol (address.substring(0,2).c_str(),nullptr,16);
-  debugV ("Source is %s",address.substring(0,2).c_str()); 
-  N2kMsg.Destination = strtol (address.substring(2,4).c_str(),nullptr,16);
-  debugV ("Dest is %s",address.substring(2,4).c_str());
-  N2kMsg.Priority = strtol (address.substring(4,5).c_str(),nullptr,16);
-  debugV ("Prio is %s",address.substring(4,5).c_str());
-  String pgns = String ((char *)MsgBuf+18,5);
-  N2kMsg.PGN = strtol (pgns.c_str(),nullptr,16);
-  debugD ("PGN is %d [%s]",N2kMsg.PGN,pgns.c_str());
-  
-  for (int i = 24; i < strlen ((char *)MsgBuf);i+=2) {
-      String byte = String ((char *)MsgBuf+i,2);
-      byte.trim();
-      if (byte.length() == 2) {
-        N2kMsg.AddByte ((char)strtol (byte.c_str(),nullptr,16));
-        debugV ("Adding byte %s [%x]",byte,(char)strtol (byte.c_str(),nullptr,16));
-      } else {
-        debugV ("Dropping byte %s at index %d",byte,i);
-      }
-  }
-
-  result = true;
-
-
-  return result;
+  return ParseMessage (N2kMsg,(char *)MsgBuf);
 }
 
 //*****************************************************************************
@@ -157,6 +117,86 @@ void tActisenseASCIIReader::ParseMessages() {
 }
 
 /**
+ * @brief converts an ActiSense ASCII string into the buffer from the N2KMSG
+ *
+ * @param N2kMsg    the message to receive the conversion
+ * @param buffer    the buffer to receive the conversion
+ * @return true     when all OK
+ */
+bool tActisenseASCIIReader::ParseMessage(tN2kMsg &N2kMsg, char *buffer) {
+  bool result = false;
+
+  debugD("Parsing message [%s] length %d", buffer, strlen(buffer));
+
+  if (buffer[0] != Escape) {
+    debugE("Invalid ActiSense message starter [%x]. Are you sending ASCII?",
+           buffer[0]);
+    return false;
+  }
+  if (strlen((char *)buffer) < 24) {
+    debugE("Invalid ActiSense message length [%d]. Are you sending ASCII? %x",
+           strlen((char *)buffer));
+    return false;
+  }
+ 
+  // get the timestamp out
+  char timestamp[11];  // 10 characters + null terminator
+  strncpy(timestamp,buffer + 1, 10);
+  timestamp[10] = '\0';
+  debugV("Processing message with timestamp %s", timestamp);
+
+  // get the address out
+  char address[6];  // 5 characters + null terminator
+  strncpy(address, buffer + 12, 5);
+  address[5] = '\0';
+  debugV("Address is %s", address);
+
+  // split address in source, destination and prio
+  char srcStr[3];
+  strncpy(srcStr, address, 2);
+  srcStr[2] = '\0';
+  N2kMsg.Source = strtol(srcStr, nullptr, 16);
+  debugV("Source is %s", srcStr);
+
+  char destStr[3];
+  strncpy(destStr, address + 2, 2);
+  destStr[2] = '\0';
+  N2kMsg.Destination = strtol(destStr, nullptr, 16);
+  debugV("Dest is %s", destStr);
+
+  char prioStr[2];
+  prioStr[0] = address[4];
+  prioStr[1] = '\0';
+  N2kMsg.Priority = strtol(prioStr, nullptr, 16);
+  debugV("Prio is %s", prioStr);
+
+  // get the PGN
+  char pgns[6];  // 5 characters + null terminator
+  strncpy(pgns,buffer + 18, 5);
+  pgns[5] = '\0';
+  N2kMsg.PGN = strtol(pgns, nullptr, 16);
+  debugD("PGN is %d [%s]", N2kMsg.PGN, pgns);
+
+  // .. and finally the payload
+  for (int i = 24; i < strlen(buffer); i += 2) {
+    char byteStr[3];
+    strncpy(byteStr, buffer + i, 2);
+    byteStr[2] = '\0';
+
+    // Check if the byteStr is of length 2 (not empty or shorter)
+    if (strlen(byteStr) == 2) {
+      char byteValue = (char)strtol(byteStr, nullptr, 16);
+      N2kMsg.AddByte(byteValue);
+      debugV("Adding byte %s [%x]", byteStr, byteValue);
+    } else {
+      debugV("Dropping byte [%02X] at index %d", byteStr[0], i);
+    }
+  }
+
+  return true;
+}
+
+/**
  * @brief builds an ActiSense ASCII string into the buffer from the N2KMSG
  *
  * @param N2kMsg    the message to convert
@@ -164,7 +204,7 @@ void tActisenseASCIIReader::ParseMessages() {
  * @param bufsize   the maximum size of the buffer
  * @return u_int16_t  the lenth of the string (zero terminated)
  */
-u_int16_t tActisenseASCIIReader::buildMessage (const tN2kMsg &N2kMsg, char* buffer, int bufsize) {
+u_int16_t tActisenseASCIIReader::buildMessage (const tN2kMsg &N2kMsg, char *buffer, int bufsize) {
    int i = 0; int j = 0;
 
   //A000000.000 02FF2 1F801 E1CBD61EBCE34A02
@@ -172,21 +212,26 @@ u_int16_t tActisenseASCIIReader::buildMessage (const tN2kMsg &N2kMsg, char* buff
   //0        1         2         3
   //            ^ ^ ^ ^     ^ 
    buffer[0] = Escape;
-   strncpy (buffer+1,"000000.000  ",11);
-   sprintf (buffer+13,"%02X",(N2kMsg.Source != 0?N2kMsg.Source:DefaultSource) & 0xff);
-   sprintf (buffer+15,"%02X",N2kMsg.Destination & 0xff);
-   sprintf (buffer+17,"%1X ",N2kMsg.Priority & 0xff);
-   sprintf (buffer+19,"%05X ",N2kMsg.PGN & 0x1ffff);
-   for (i = 25;j < N2kMsg.DataLen;i+=2) {
+   strncpy (buffer + 1,"000000.000 ",11);
+   debugV ("messageBuilder time: %s",buffer);
+   sprintf (buffer + 12,"%02X",N2kMsg.Source & 0xff);
+   sprintf (buffer + 14,"%02X",N2kMsg.Destination & 0xff);
+   sprintf (buffer + 16,"%1X ",N2kMsg.Priority & 0xff);
+   debugV ("messageBuilder address: %s",buffer);
+   sprintf (buffer + 18,"%05X ",N2kMsg.PGN & 0x1ffff);
+   debugV ("messageBuilder PGN: %s",buffer);
+ 
+   for (i = 24;j < N2kMsg.DataLen;i+=2) {
       if (i < bufsize) {
-        sprintf (buffer+i,"%02X",N2kMsg.GetByte(j) & 0xff);
+        sprintf (buffer + i,"%02X",N2kMsg.GetByte(j) & 0xff);
       } else {
-        DebugE ("Writing to exhausted ActisenseBuffer! PGN = %d", N2kMsg.PGN);
+        debugE ("Writing to exhausted ActisenseBuffer! PGN = %d", N2kMsg.PGN);
       }
    }
 
    buffer[i] = '\0';
-
+   debugD ("message built: %s, l=%d , i=%d",buffer, strlen(buffer),i);
+ 
    return i;
   
 }

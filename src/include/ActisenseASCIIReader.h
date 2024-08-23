@@ -60,7 +60,7 @@ class tActisenseASCIIReader
 {
 protected:
     /** \brief Maximum length of the stream message buffer*/
-    #define MAX_STREAM_MSG_BUF_LEN 1024
+    #define MAX_STREAM_MSG_BUF_LEN 300
     /** \brief Buffer for incoming messages from stream*/
     unsigned char MsgBuf[MAX_STREAM_MSG_BUF_LEN];
     /** \brief Current write position inside the buffer */
@@ -133,12 +133,11 @@ public:
      * or
      * <10><02><94><length (1)><priority (1)><PGN (3)><destination (1)><len (1)><data (len)><CRC (1)><10><03>
      * \param N2kMsg    Reference to a N2kMsg Object  
-     * \param ReadOut   Parameter is designed to be used if stream has multiprotocol data.
      * 
      * \retval true  for new message received.
      * \retval false if (ReadStream==0)
      */
-    bool GetMessageFromStream(tN2kMsg &N2kMsg, bool ReadOut=true);
+    bool GetMessageFromStream(tN2kMsg &N2kMsg);
 
     /**
      * @brief builds an ActiSense ASCII string into the buffer from the N2KMSG
@@ -163,6 +162,15 @@ public:
      * 
      */
     void ParseMessages();
+
+    /**
+     * @brief converts an ActiSense ASCII string into the buffer from the N2KMSG
+     * 
+     * @param N2kMsg    the message to receive the conversion 
+     * @param buffer    the buffer to receive the conversion
+     * @return true     if all OK
+     */
+    bool ParseMessage (tN2kMsg &N2kMsg, char* buffer);
 
     /********************************************************************//**
      * \brief Set the Msg Handler object

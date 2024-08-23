@@ -9,12 +9,13 @@
 
 #define SOURCE_ADDRESS 0x0
 #define ESP_BTNR GPIO_NUM_0
-// ports for the 3 WGX1 data servers
-#define WGX1_PORT1 60001
-#define WGX1_PORT2 60002
-#define WGX1_PORT3 60003 
 
-#include <ActisenseReader.h>
+#define WGX1_PORT 60001
+
+
+//#define HASDISPLAY
+
+
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <N2kMessages.h>
@@ -36,7 +37,7 @@ ReactESP app;
 
 
 
-WiFiServer server1 (WGX1_PORT1);
+WiFiServer server (WGX1_PORT);
 
 
 String hostname = "WGX1-GW";
@@ -97,7 +98,9 @@ private:
 };
 
 WiFiClient client;
-WiFiClientStream* wifiStream;
+//WiFiClientStream* wifiStream;
+WiFiClient* wifiStream;
+
 
 
 void ToggleLed() {
@@ -142,13 +145,12 @@ void HandleStreamN2kMsg(const tN2kMsg &message) {
   ToggleLed();
   char buffer[MAX_STREAM_MSG_BUF_LEN];
 
-
   // Send it off
   if (client.connected()) {
       message.ForceSource (SOURCE_ADDRESS);   // alter the source to mine
       actisense_reader.buildMessage (message,buffer,MAX_STREAM_MSG_BUF_LEN);
       debugI ("Forwarding N2K msg PGN %d, in Actisense ASCII [%s]",message.PGN,buffer);
-      //wifiStream->println (buffer);
+      wifiStream->println (buffer);
   } else {
     debugE ("Cannot forward N2K msg PGN %d, no connection",message.PGN);
   }
@@ -165,6 +167,41 @@ void HandleStreamActisenseMsg(const tN2kMsg &message) {
   ToggleLed();
   debugI ("Forwarding Actisense msg PGN %d to N2K bus",message.PGN);
   nmea2000->SendMsg(message);
+
+  #ifdef DEBUG_ENABLED
+    if (message.PGN == 129794) {   // AIS extended
+       uint8_t MessageID;
+       tN2kAISRepeat Repeat;
+       uint32_t UserID;
+			 uint32_t IMOnumber;
+       char    Callsign[80];
+       char    Name[80];
+       uint8_t VesselType;
+       double Length;
+			 double Beam; 
+       double PosRefStbd; 
+       double PosRefBow;
+       uint16_t ETAdate;
+       double ETAtime;
+			 double Draught;
+       char   Destination[80];
+       tN2kAISVersion AISversion;
+       tN2kGNSStype GNSStype;
+			 tN2kAISDTE DTE;
+       tN2kAISTransceiverInformation AISinfo;
+       uint8_t SID;
+       
+       ParseN2kAISClassAStatic(message, MessageID, Repeat, UserID,
+				    IMOnumber, Callsign, 80, Name, 80, VesselType, Length,
+				    Beam, PosRefStbd, PosRefBow, ETAdate, ETAtime,
+				    Draught, Destination, 80, AISversion, GNSStype,
+				    DTE, AISinfo, SID);
+    
+       debugE ("Parsed AIS info for IMO %d, [%s] callsign [%s]",IMOnumber,Name,Callsign);
+
+    }
+  #endif
+  debugI ("Done");
 }
 
 String can_state;
@@ -195,7 +232,7 @@ void setup() {
 
 #ifndef DEBUG_DISABLED
   SetupSerialDebug(115200);
-  Debug.begin(hostname,22,DEBUG_LEVEL);
+//  Debug.begin(hostname,22,DEBUG_LEVEL);
 #else
   Serial.begin(115200);
 #endif
@@ -217,12 +254,7 @@ void setup() {
                     ->set_button_pin(ESP_BTNR)  // reset
                     ->get_app();
 
-  // TODO Set up a port (or 2) where we can interact with WGX clients
-
-  // TODO Add debugging capabilities over the network
-
-  // MAYBE Cater for a touch button to enable the display and move onto
-  // different pages
+ 
 
   // toggle the LED pin at rate of 1 Hz
   pinMode(LED_BUILTIN, OUTPUT);
@@ -278,14 +310,15 @@ void setup() {
   // Data Server1
   app.onRepeat(1000, []() {
     if (WiFi.isConnected()) {
-      if (!server1) server1.begin();
-      if (server1.hasClient()) {
+      if (!server) server.begin();
+      if (server.hasClient()) {
         debugD ("Evaluating client connection");
         if (!client || !client.connected()) {
           debugI("We have a client!");
-          client = server1.available();
+          client = server.available();
           // Create WiFiClientStream object
-          wifiStream = new WiFiClientStream(&client);
+         // wifiStream = new WiFiClientStream(&client);
+          wifiStream = &client;
           actisense_reader.SetReadStream(wifiStream);
 
 
@@ -312,7 +345,7 @@ void setup() {
 
 
   // update the statistics on #processed messages
-  app.onRepeat (1000, [](){
+  app.onRepeat (2000, [](){
       counterActi->emit (num_actisense_messages);
       counterN2K->emit (num_n2k_messages);
   });
@@ -328,7 +361,7 @@ void setup() {
   app.onRepeat(100, []() { PollCANStatus(); });
 #endif
 
-
+#ifdef HASDISPLAY
   // initialize the display
   i2c = new TwoWire(0);
   i2c->begin(SDA_PIN, SCL_PIN);
@@ -341,22 +374,7 @@ void setup() {
   display->clearDisplay();
   display->display();
 
-#ifndef DEBUG_DISABLED
-/// FOR DEBUGGING REMOVE WHEN DONE
-  app.onRepeat (1000,[](){
- 
-    // send a PGN 129029 message in ActiSense ASCII
-    const char *msg = "A000000.000 00FF2 1F805 FFE54D60606E304060352C8FC72B07587DBA743BF39000FFFFFFFFFFFFFF7F23FC104000FF7FFFFFFFFF0";
-
-    if (client.connected()) {
-      debugD ("Sending N2K msg PGN %s",msg);
-      wifiStream->println (msg);
-      num_n2k_messages++;
-    }
-  });
-#endif
-
-  // turn the display off 10 mins after startup
+    // turn the display off 10 mins after startup
     app.onDelay (600000,[](){
       displayOff();       
     });
@@ -379,14 +397,45 @@ void setup() {
     display->printf("");
     WiFi.localIP().toString().toCharArray (ip,sizeof(ip));
     display->printf("IP: %s\n", ip);
-  //  display->printf("Status %s", client1?"Connected":"Idle");
+    display->printf("Status %s", client.connected()?"Connected":"Idle");
 
 
     display->display();
 
-   // num_n2k_messages = 0;
-   // num_actisense_messages = 0;
   });
+
+#endif
+
+#ifndef DEBUG_DISABLED
+ /// FOR DEBUGGING REMOVE WHEN DONE
+  app.onRepeat (1000,[](){
+ 
+    // send a PGN 129029 message in ActiSense ASCII
+ // const char *msg = "A000000.000 00FF2 1F805 FFE54D60606E304060352C8FC72B07587DBA743BF39000FFFFFFFFFFFFFF7F23FC104000FF7FFFFFFFFF0";
+    const char *msg = "A000000.000 00FF2 1FB02 C5C827160EFFFFFFFFFFFFFFFFFFFFFF484F4F4745FFFFFFFFFFFFFFFFFFFFFFFFFFFFFF474A06FA00AA006405FFFFFFFFFFFFFC0353542E50455445525342555247FFFFFFFFFFFFFFBCE0";
+    char out[MAX_STREAM_MSG_BUF_LEN];
+    tN2kMsg n2k_msg;
+
+    if (client.connected()) {
+      if (actisense_reader.ParseMessage (n2k_msg,(char*)msg)) {  // turn into n2k
+        debugV ("Parsed debug message PGN %d PRIO %d SRC %02X DST %02X",n2k_msg.PGN,n2k_msg.Priority,n2k_msg.Source,n2k_msg.Destination);
+        actisense_reader.buildMessage(n2k_msg,out,MAX_STREAM_MSG_BUF_LEN);  // turn into ascii again
+        debugD ("Incoming message  [%s] l=%d",msg,strlen(msg));
+        debugD ("Converted message [%s] l=%d",out,strlen(out));
+        debugI ("Sending N2K msg PGN %s",out);
+        //wifiStream->println (out);
+        num_n2k_messages++;
+      } else {
+        debugI ("No client connected");
+      }
+
+      
+    }
+
+
+  });
+#endif
+
 
   sensesp_app->start();
 
