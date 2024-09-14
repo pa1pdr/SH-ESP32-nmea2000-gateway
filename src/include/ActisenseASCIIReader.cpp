@@ -112,6 +112,7 @@ void tActisenseASCIIReader::ParseMessages() {
   tN2kMsg N2kMsg;
 
     while (GetMessageFromStream(N2kMsg)) {
+      
       if (MsgHandler!=0) MsgHandler(N2kMsg);
     }
 }
@@ -139,6 +140,8 @@ bool tActisenseASCIIReader::ParseMessage(tN2kMsg &N2kMsg, char *buffer) {
     return false;
   }
  
+  N2kMsg.Clear();   // start with a clean sheet
+
   // get the timestamp out
   char timestamp[11];  // 10 characters + null terminator
   strncpy(timestamp,buffer + 1, 10);
@@ -192,7 +195,6 @@ bool tActisenseASCIIReader::ParseMessage(tN2kMsg &N2kMsg, char *buffer) {
       debugV("Dropping byte [%02X] at index %d", byteStr[0], i);
     }
   }
-
   return true;
 }
 

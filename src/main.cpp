@@ -13,7 +13,7 @@
 #define WGX1_PORT 60001
 
 
-//#define HASDISPLAY
+#define HASDISPLAY
 
 
 #include <Adafruit_GFX.h>
@@ -26,7 +26,9 @@
 #include <esp_int_wdt.h>
 #include <esp_task_wdt.h>
 #include <sensesp_app_builder.h>
+#include <regex>
 #include "include/ActisenseASCIIReader.h"
+
 
 using namespace sensesp;
 
@@ -34,7 +36,6 @@ ReactESP app;
 
 #define SCREEN_WIDTH 128  // OLED display width, in pixels
 #define SCREEN_HEIGHT 64  // OLED display height, in pixels
-
 
 
 WiFiServer server (WGX1_PORT);
@@ -45,62 +46,81 @@ String hostname = "WGX1-GW";
 
 auto counterActi = new SKOutputInt ("sensorDevice." + hostname +  ".ActiSense_PGNs","",new SKMetadata (""));
 auto counterN2K = new SKOutputInt ("sensorDevice." + hostname +  ".N2K_PGNs","",new SKMetadata (""));
+auto counter129794 = new SKOutputInt ("sensorDevice." + hostname +  ".129794_PGNs","",new SKMetadata (""));
+auto counter129038 = new SKOutputInt ("sensorDevice." + hostname +  ".129038_PGNs","",new SKMetadata (""));
 
 
 tActisenseASCIIReader actisense_reader;
+
+elapsedMillis sinceLastComms = 0;
 
 TwoWire *i2c;
 Adafruit_SSD1306 *display;
 bool show_display = true;
 
 tNMEA2000 *nmea2000;
-
-class WiFiClientStream : public Stream {
-public:
-    WiFiClientStream(WiFiClient* client) : client(client) {}
-
-    size_t write(uint8_t data) override {
-        debugV ("writing [%02x]",data);
-        return client->write(data);
+static const char SCHEMA[] PROGMEM = R"###({
+    "type": "object",
+    "properties": {
+        "regex": { "title": "Filter expressiom", "type": "string", "description": "Regular expression to filter PGN numbers. Empty denies all, .* allows all" }
     }
+  })###";
 
-    size_t write(const uint8_t *buffer, size_t size) override {
-        debugV ("Writing [%s]",buffer);
-        return client->write(buffer, size);
-    }
-
-    int available() override {
-        return client->available();
-    }
-
-    int read() override {
-        if (!client->connected() || !client->available()) {
-            return -1;
-        }
-        int c = client->read();
-        debugV ("C = %d %c",c,(char)c);
-        return c;
-    }
-
-    int peek() override {
-        if (!client->connected() || !client->available()) {
-            return -1;
-        }
-        return client->peek();
-    }
-
-    void flush() override {
-        client->flush();
-    }
-
-private:
-    WiFiClient* client;
-};
 
 WiFiClient client;
-//WiFiClientStream* wifiStream;
-WiFiClient* wifiStream;
 
+
+class regexFilter : public Configurable {
+  
+public:
+
+ regexFilter (String config_path = "",String description="",int sort_order = 1000) : Configurable (config_path,description,sort_order) {}
+
+String regex = "";
+
+
+void get_configuration(JsonObject &root) {
+   root["regex"] = regex;
+};
+
+void setRegex (String reg) {
+  if (!regex.equals (reg)) {
+    regex = reg;
+    save_configuration();
+  }
+}
+
+String getRegex () {
+  return regex;
+}
+
+bool matchesPGN (long msgPGN) {
+   std::regex rangeRegex (regex.c_str());
+   std::string pgnStr = std::to_string(msgPGN);
+   bool result = std::regex_match (pgnStr,rangeRegex);
+   debugI ("Matching PGN [%s] against regex [%s] is %s",pgnStr.c_str(),regex.c_str(),result?"OK":"no match");
+   return result;
+}
+
+String get_config_schema() { return FPSTR(SCHEMA); }
+
+bool set_configuration(const JsonObject &config) {
+  String expected[] = {"regex"};
+  for (auto str : expected) {
+    if (!config.containsKey(str)) {
+      return false;
+    }
+  }
+  String s = config["regex"];
+  regex = s;
+  return true;
+};
+
+};
+
+
+regexFilter regexIn ("/NMEAInFilter","Regex to filter incoming  messages from the NMEA2000 bus before moving to SignalK");
+regexFilter regexOut ("/MNEAOutFilter","Regex to filter outgoing messages from SignalK to the NMEA2000 bus");
 
 
 void ToggleLed() {
@@ -114,10 +134,10 @@ void ToggleLed() {
  * 
  */
 void displayOn() {
-   display->ssd1306_command(SSD1306_DISPLAYON);  //not recommended
+  // display->ssd1306_command(SSD1306_DISPLAYON);  //not recommended
    show_display = true;
-   // display->clearDisplay();
-   // display->display();
+   display->clearDisplay();
+   display->display();
 }
 
 /**
@@ -128,12 +148,14 @@ void displayOff() {
    show_display = false;
    display->clearDisplay();
    display->display();
-   display->ssd1306_command(SSD1306_DISPLAYOFF);  //not recommended
+  // display->ssd1306_command(SSD1306_DISPLAYOFF);  //not recommended
 }
 
 
 unsigned long num_n2k_messages = 0;
 unsigned long num_actisense_messages = 0;
+unsigned long num_129794_msg = 0;
+unsigned long num_129038_msg = 0;
 
 /**
  * @brief handles an incoming NMEA2000 message from the bus
@@ -141,16 +163,19 @@ unsigned long num_actisense_messages = 0;
  * @param message 
  */
 void HandleStreamN2kMsg(const tN2kMsg &message) {
-  num_n2k_messages++;
-  ToggleLed();
+
   char buffer[MAX_STREAM_MSG_BUF_LEN];
 
   // Send it off
   if (client.connected()) {
-      message.ForceSource (SOURCE_ADDRESS);   // alter the source to mine
-      actisense_reader.buildMessage (message,buffer,MAX_STREAM_MSG_BUF_LEN);
-      debugI ("Forwarding N2K msg PGN %d, in Actisense ASCII [%s]",message.PGN,buffer);
-      wifiStream->println (buffer);
+      if (regexIn.matchesPGN (message.PGN)) {
+        num_n2k_messages++;
+        ToggleLed();
+        message.ForceSource (SOURCE_ADDRESS);   // alter the source to mine
+        actisense_reader.buildMessage (message,buffer,MAX_STREAM_MSG_BUF_LEN-1);
+        debugI ("Forwarding N2K msg PGN %d, in Actisense ASCII [%s]",message.PGN,buffer);
+        client.println (buffer);    // send to the client
+      }
   } else {
     debugE ("Cannot forward N2K msg PGN %d, no connection",message.PGN);
   }
@@ -163,13 +188,21 @@ void HandleStreamN2kMsg(const tN2kMsg &message) {
  */
 void HandleStreamActisenseMsg(const tN2kMsg &message) {
 
-  num_actisense_messages++;
-  ToggleLed();
-  debugI ("Forwarding Actisense msg PGN %d to N2K bus",message.PGN);
-  nmea2000->SendMsg(message);
 
-  #ifdef DEBUG_ENABLED
-    if (message.PGN == 129794) {   // AIS extended
+  if (regexOut.matchesPGN(message.PGN)) {
+      ToggleLed();
+      num_actisense_messages++;
+      debugI ("Forwarding Actisense msg PGN %d to N2K bus",message.PGN);
+      message.ForceSource(nmea2000->GetN2kSource());
+      nmea2000->SendMsg(message);   // but on the bus
+  }
+
+  if (message.PGN == 129794L) num_129794_msg++;
+  if (message.PGN == 129038L) num_129038_msg++;
+  
+
+  #ifdef _DEBUG_ENABLED
+    if (message.PGN == 129794L) {   // AIS extended
        uint8_t MessageID;
        tN2kAISRepeat Repeat;
        uint32_t UserID;
@@ -192,16 +225,15 @@ void HandleStreamActisenseMsg(const tN2kMsg &message) {
        uint8_t SID;
        
        ParseN2kAISClassAStatic(message, MessageID, Repeat, UserID,
-				    IMOnumber, Callsign, 80, Name, 80, VesselType, Length,
+				    IMOnumber, Callsign,20, Name, 20, VesselType, Length,
 				    Beam, PosRefStbd, PosRefBow, ETAdate, ETAtime,
-				    Draught, Destination, 80, AISversion, GNSStype,
+				    Draught, Destination, 20, AISversion, GNSStype,
 				    DTE, AISinfo, SID);
     
-       debugE ("Parsed AIS info for IMO %d, [%s] callsign [%s]",IMOnumber,Name,Callsign);
+       debugE ("Parsed AIS info for %d, [%s] callsign [%s] destination [%s]",UserID,Name,Callsign,Destination);
 
     }
   #endif
-  debugI ("Done");
 }
 
 String can_state;
@@ -230,9 +262,8 @@ void PollCANStatus() {
 
 void setup() {
 
-#ifndef DEBUG_DISABLED
+#ifdef DEBUG_ENABLED
   SetupSerialDebug(115200);
-//  Debug.begin(hostname,22,DEBUG_LEVEL);
 #else
   Serial.begin(115200);
 #endif
@@ -258,7 +289,7 @@ void setup() {
 
   // toggle the LED pin at rate of 1 Hz
   pinMode(LED_BUILTIN, OUTPUT);
-  app.onRepeat(1000, []() { ToggleLed(); });
+  //app.onRepeat(5000, []() { ToggleLed(); });
 
   // instantiate the NMEA2000 object
   nmea2000 = new tNMEA2000_esp32(CAN_TX_PIN, CAN_RX_PIN);
@@ -296,7 +327,7 @@ void setup() {
   nmea2000->SetForwardType(tNMEA2000::fwdt_Text); // Show bus data in clear text
   
   
-  nmea2000->EnableForward(false);  // dont forward 
+  nmea2000->EnableForward(true);  // dont forward 
   
   nmea2000->SetForwardOwnMessages(false);  // do not echo own messages.
   nmea2000->SetMode(tNMEA2000::N2km_ListenAndSend);
@@ -318,43 +349,52 @@ void setup() {
           client = server.available();
           // Create WiFiClientStream object
          // wifiStream = new WiFiClientStream(&client);
-          wifiStream = &client;
-          actisense_reader.SetReadStream(wifiStream);
-
+         // wifiStream = &client;
+         // actisense_reader.SetReadStream(wifiStream);
+          actisense_reader.SetReadStream(&client);
 
           debugD ("client connected");
-          nmea2000->SetForwardStream(wifiStream);
+          nmea2000->SetForwardStream(&client);
           debugD ("N2K Stream forwarded");
           debugI("New client connected on data server 1");
         } else {
+          if (client) client.stop();
           debugI ("client1 %s", client.connected()?"connected":"not connected");
         }
+        
       } else {
            if (client && !client.connected()) {  /// no active client
             debugI ("closing connection");
-            client.stop();
+            if (server) server.close();
           }
       }
     }
   });
 
-  app.onRepeat (600000L,[](){
-      nmea2000->SendProductInformation();
-      nmea2000->SendIsoAddressClaim();
-  });
+  //app.onRepeat (600000L,[](){
+  //    nmea2000->SendProductInformation();
+  //    nmea2000->SendIsoAddressClaim();
+  //});
 
 
   // update the statistics on #processed messages
   app.onRepeat (2000, [](){
       counterActi->emit (num_actisense_messages);
       counterN2K->emit (num_n2k_messages);
+      counter129794->emit (num_129794_msg);
+      counter129038->emit (num_129038_msg);
+
   });
 
   // No need to parse the messages at every single loop iteration; 1 ms will do
-  app.onRepeat(1, []() {
+  app.onRepeat(100, []() {
     actisense_reader.ParseMessages();
-    nmea2000->ParseMessages();
   });
+
+  app.onRepeat(1, []() {
+     nmea2000->ParseMessages();
+  });
+
 
 #if 0
   // enable CAN status polling
@@ -406,13 +446,15 @@ void setup() {
 
 #endif
 
-#ifndef DEBUG_DISABLED
+#ifdef _DEBUG_ENABLED
  /// FOR DEBUGGING REMOVE WHEN DONE
   app.onRepeat (1000,[](){
  
-    // send a PGN 129029 message in ActiSense ASCII
- // const char *msg = "A000000.000 00FF2 1F805 FFE54D60606E304060352C8FC72B07587DBA743BF39000FFFFFFFFFFFFFF7F23FC104000FF7FFFFFFFFF0";
-    const char *msg = "A000000.000 00FF2 1FB02 C5C827160EFFFFFFFFFFFFFFFFFFFFFF484F4F4745FFFFFFFFFFFFFFFFFFFFFFFFFFFFFF474A06FA00AA006405FFFFFFFFFFFFFC0353542E50455445525342555247FFFFFFFFFFFFFFBCE0";
+    // send a PGN 129029 message in ActiSense ASCII (Position )
+    // const char *msg = "A000000.000 00FF2 1F805 FFE54D60606E304060352C8FC72B07587DBA743BF39000FFFFFFFFFFFFFF7F23FC104000FF7FFFFFFFFF0";
+ // const char *msg = "A000000.000 00FF2 1FB02 C5C827160EFFFFFFFFFFFFFFFFFFFFFF484F4F4745FFFFFFFFFFFFFFFFFFFFFFFFFFFFFF474A06FA00AA006405FFFFFFFFFFFFFC0353542E50455445525342555247FFFFFFFFFFFFFFBCE0";
+    // "pgn":129794,"Message ID":5,"Repeat indicator":0,"User ID":276807000,"IMO number":8919805,"Callsign":" ","Name":"SILJA EUROPA ","Type of ship":60,"Length":202,"Beam":32,"Position reference from Starboard":16,"Position reference from Bow":22,"Draft":6.8,"Destination":"TALLINN ","AIS version indicator":0,"GNSS type":1,"DTE":0,"AIS Transceiver information":0} 
+    const char *msg = "A000000.000 00FF2 1FB02 C558BD7F10FD1A88002020202020202053494C4A41204555524F504120202020202020203CE4074001A000DC00FFFFFFFFFFFFA80254414C4C494E4E2020202020202020202020202084E0";
     char out[MAX_STREAM_MSG_BUF_LEN];
     tN2kMsg n2k_msg;
 
@@ -423,16 +465,12 @@ void setup() {
         debugD ("Incoming message  [%s] l=%d",msg,strlen(msg));
         debugD ("Converted message [%s] l=%d",out,strlen(out));
         debugI ("Sending N2K msg PGN %s",out);
-        //wifiStream->println (out);
+        client.println (out);
         num_n2k_messages++;
       } else {
         debugI ("No client connected");
-      }
-
-      
+      } 
     }
-
-
   });
 #endif
 
