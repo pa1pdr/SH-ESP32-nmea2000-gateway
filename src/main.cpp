@@ -57,6 +57,7 @@ elapsedMillis sinceLastComms = 0;
 TwoWire *i2c;
 Adafruit_SSD1306 *display;
 bool show_display = true;
+bool transmitN2K = false;
 
 tNMEA2000 *nmea2000;
 static const char SCHEMA[] PROGMEM = R"###({
@@ -71,12 +72,19 @@ WiFiClient client;
 
 
 class regexFilter : public Configurable {
+
+String regex;  
   
 public:
 
- regexFilter (String config_path = "",String description="",int sort_order = 1000) : Configurable (config_path,description,sort_order) {}
+ regexFilter (String config_path = "",String description="",int sort_order = 1000) : Configurable (config_path,description,sort_order) {
+   load_configuration();
+ }
 
-String regex = "";
+
+void load() {
+  load_configuration();
+}
 
 
 void get_configuration(JsonObject &root) {
@@ -166,6 +174,19 @@ void HandleStreamN2kMsg(const tN2kMsg &message) {
 
   char buffer[MAX_STREAM_MSG_BUF_LEN];
 
+    unsigned char SID;
+    double depth;
+    double offset;
+
+    // check if a depth message has been on the bus which signals
+    // all raymarine instruments have been initialized
+    if (!transmitN2K && (message.PGN == 128267)) {  // Water Depth
+      if (ParseN2kWaterDepth(message, SID, depth, offset)) {
+        debugI  ("Received a depth of %.2fm %.2f offset\n",depth,offset);
+        delay (1500L);                   // wait a bit
+        transmitN2K = true;             /// enable transmitting on N2K
+    }
+   }
   // Send it off
   if (client.connected()) {
       if (regexIn.matchesPGN (message.PGN)) {
@@ -189,7 +210,7 @@ void HandleStreamN2kMsg(const tN2kMsg &message) {
 void HandleStreamActisenseMsg(const tN2kMsg &message) {
 
 
-  if (regexOut.matchesPGN(message.PGN)) {
+  if (regexOut.matchesPGN(message.PGN) && transmitN2K) {
       ToggleLed();
       num_actisense_messages++;
       debugI ("Forwarding Actisense msg PGN %d to N2K bus",message.PGN);
@@ -338,6 +359,10 @@ void setup() {
   actisense_reader.SetDefaultSource(75);
   actisense_reader.SetMsgHandler(HandleStreamActisenseMsg);
 
+
+  regexIn.load();
+  regexOut.load();
+
   // Data Server1
   app.onRepeat(1000, []() {
     if (WiFi.isConnected()) {
@@ -387,13 +412,20 @@ void setup() {
   });
 
   // No need to parse the messages at every single loop iteration; 1 ms will do
-  app.onRepeat(100, []() {
+  app.onRepeat(1, []() {
     actisense_reader.ParseMessages();
   });
 
   app.onRepeat(1, []() {
      nmea2000->ParseMessages();
   });
+
+
+  // keep rebooting untill all instruments are stable
+  app.onDelay (500, [](){
+      if (!transmitN2K) ESP.restart(); // boot until OK
+  });
+
 
 
 #if 0
